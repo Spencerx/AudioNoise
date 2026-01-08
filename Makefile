@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -O2 -ffast-math -fsingle-precision-constant -Wdouble-promotion -Wfloat-conversion
+CFLAGS = -Wall -O2 -ffast-math -fsingle-precision-constant # -Wdouble-promotion -Wfloat-conversion
 LDFLAGS = -lm
 
 effects = flanger echo fm phaser discont
