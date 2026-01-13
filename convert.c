@@ -20,6 +20,7 @@ typedef unsigned int uint;
 #include "flanger.h"
 #include "echo.h"
 #include "fm.h"
+#include "am.h"
 #include "phaser.h"
 #include "discont.h"
 
@@ -47,7 +48,8 @@ struct effect {
 	void (*init)(float,float,float,float);
 	float (*step)(float);
 } effects[] = {
-	EFF(discont), EFF(phaser), EFF(flanger), EFF(echo), EFF(fm),
+	EFF(discont), EFF(phaser), EFF(flanger), EFF(echo),
+	EFF(fm), EFF(am),
 	EFF(magnitude),
 };
 
