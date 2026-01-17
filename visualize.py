@@ -10,7 +10,8 @@ import argparse
 # --- Constants ---
 INITIAL_WINDOW_SEC = 2.0
 BYTES_PER_SAMPLE = 4
-MAX_WIDTH_SEC = 2.0  # Max zoom out
+# MAX_WIDTH_SEC removed, utilizing self.duration_sec instead
+MAX_PLOT_POINTS = 5000   # Maximum points to plot per line
 
 class WaveformVisualizer:
     def __init__(self, filenames, rate, min_zoom_samples=100):
@@ -39,6 +40,12 @@ class WaveformVisualizer:
             return
 
         self.duration_sec = self.max_samples / self.rate
+
+        # Pre-allocate X-axis buffer to avoid allocations during plot updates
+        self.t_buffer = np.zeros(MAX_PLOT_POINTS, dtype=np.float64)
+        # Pre-allocate index buffer 0..N-1
+        self.index_buffer = np.arange(MAX_PLOT_POINTS, dtype=np.float64)
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -130,6 +137,12 @@ class WaveformVisualizer:
 
         end_sample = int((start_time + window_duration) * self.rate)
 
+        # Determine downsampling step to keep plot fast
+        total_samples = end_sample - start_sample
+        step = 1
+        if total_samples > MAX_PLOT_POINTS:
+            step = int(np.ceil(total_samples / MAX_PLOT_POINTS))
+
         global_min_y, global_max_y = 2147483647, -2147483648
         has_data = False
 
@@ -138,22 +151,57 @@ class WaveformVisualizer:
                 line.set_data([], [])
                 continue
 
+            # Safe end for this specific file
             safe_end = min(end_sample, mm.size)
             if safe_end <= start_sample:
                  line.set_data([], [])
                  continue
 
-            chunk = mm[start_sample:safe_end]
+            # Strided slice (View into memory map - very fast)
+            chunk = mm[start_sample:safe_end:step]
 
             if chunk.size > 0:
-                # Precise time axis using arange
-                t_origin = start_sample / self.rate
-                t_axis = np.arange(chunk.size) / self.rate + t_origin
+                # Generate Time Axis without allocation using pre-allocated buffer
+                # We use the shared self.t_buffer
 
-                line.set_data(t_axis, chunk)
+                # Careful: chunk.size might be <= MAX_PLOT_POINTS.
+                # If chunk.size > MAX_PLOT_POINTS (edge case), we clamp or just allocate.
+                # With calculated step, chunk.size should be <= MAX_PLOT_POINTS generally.
 
-                # Show markers if zoomed in enough (few samples visible)
-                if chunk.size < 300:
+                current_count = chunk.size
+                if current_count > len(self.t_buffer):
+                    # Should rarely happen with correct step logic, but resize if needed
+                    self.t_buffer = np.zeros(current_count, dtype=np.float64)
+
+                # In-place generation of time axis:
+                # 1. Fill with 0..N-1
+                # 2. Scale by step/rate
+                # 3. Add start_time
+
+                # Using np.linspace is safer for endpoints but slightly slower?
+                # Let's use linspace with 'out'.
+                # t_first = start_sample / rate
+                # t_last = t_first + (current_count - 1) * step / rate
+                # np.linspace(t_first, t_last, current_count, endpoint=True, out=self.t_buffer[:current_count])
+
+                # Actually, precise sample alignment is better with arange logic:
+                # t = (start + i*step) / rate
+
+                # View into the result buffer
+                target_buffer = self.t_buffer[:current_count]
+
+                # Copy pre-calculated indices 0..N-1
+                # We use copyto to avoid allocation
+                np.copyto(target_buffer, self.index_buffer[:current_count])
+
+                # Apply scaling and offset in-place
+                target_buffer *= (step / self.rate)
+                target_buffer += (start_sample / self.rate)
+
+                line.set_data(target_buffer, chunk)
+
+                # Show markers if zooming in enough (step must be 1 to show true samples)
+                if step == 1 and chunk.size < 300:
                     line.set_marker('.')
                     line.set_markersize(3)
                 else:
@@ -173,7 +221,7 @@ class WaveformVisualizer:
         self.navigating = True
         try:
             # Clamp width
-            width = max(self.min_width_sec, min(width, MAX_WIDTH_SEC))
+            width = max(self.min_width_sec, min(width, self.duration_sec))
 
             # Clamp start time
             start_time = max(0, min(start_time, self.duration_sec))
@@ -227,7 +275,7 @@ class WaveformVisualizer:
         new_width = cur_width * scale_factor
 
         # Clamp zoom
-        new_width = max(self.min_width_sec, min(new_width, MAX_WIDTH_SEC))
+        new_width = max(self.min_width_sec, min(new_width, self.duration_sec))
 
         # Center zoom
         rel_x = (event.xdata - xlim[0]) / cur_width
@@ -305,7 +353,7 @@ class WaveformVisualizer:
             elif event.key == 'pageup': # Zoom Out (2x width)
                 center = (xlim[0] + xlim[1]) / 2
                 new_width = width * 2.0
-                new_width = min(new_width, MAX_WIDTH_SEC)
+                new_width = min(new_width, self.duration_sec)
                 new_start = center - (new_width / 2)
                 # Clamp start
                 new_start = max(0, min(new_start, self.duration_sec - new_width))
@@ -379,7 +427,7 @@ class WaveformVisualizer:
         self.navigating = True
         try:
              # X Axis Logic
-             new_width = max(self.min_width_sec, min(width, MAX_WIDTH_SEC))
+             new_width = max(self.min_width_sec, min(width, self.duration_sec))
              # If user selected < min width, we centered it above.
 
              self.get_chunk(start_time, new_width)
